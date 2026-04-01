@@ -1,0 +1,35 @@
+# ── Credenciais e variáveis de ambiente ──────────────────────────────────────
+.env
+token.json
+json.json
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
+# ── Dados sensíveis / gerados ─────────────────────────────────────────────────
+data/input/*.xlsx
+data/output/PDFs
+
+# ── Cache R ───────────────────────────────────────────────────────────────────
+.RData
+.Rhistory
+.Rproj.user/
+
+# ── Cache Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# ── WebDriver cache ───────────────────────────────────────────────────────────
+archive/65d95382503887702811a352e0e4c0e4
+
+# ── Sistema operacional ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+data/.token_cache.bin
