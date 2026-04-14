@@ -12,14 +12,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from config import (
-    BASE_DIR, DIRETORIO_PDFS, PLANILHA_CONTROLE,
+    BASE_DIR, DIRETORIO_PDFS, PLANILHA_LISTA_DOWNLOAD,
     URL_SEI, URL_BASE_PDF,
     TIMEOUT, SLEEP_LOGIN, SLEEP_PESQUISA, CHROME_OPTIONS,
     XPATH_TELA_LOGIN, XPATH_USUARIO, XPATH_SENHA, XPATH_ORGAO,
     XPATH_ORGAO_SCC, XPATH_BOTAO_LOGIN, XPATH_BODY,
     XPATH_PESQUISA, XPATH_IFRAME_DOC, XPATH_LINK_PDF,
     ENTER, ESC,
-    COL_SEI_NUM_SEI, COL_SEI_INSTRUMENTO,
+    COLUNAS_TA, COL_DOC_AUTORIZATIVO, COL_OBSERVACAO,
 )
 
 load_dotenv(BASE_DIR / ".env")
@@ -96,26 +96,39 @@ def baixar_pdf(navegador, instrumento, caminho_pdf, num_sei):
 
 # ── Função principal ──────────────────────────────────────────────────────────
 
-def executar(instrumentos_df=None):
+def _registrar_observacao(lista_df, idx, numero):
+    """Acumula 'Arquivo X não encontrado' na coluna Observação da linha idx."""
+    msg = f"Arquivo {numero} não encontrado"
+    atual = lista_df.at[idx, COL_OBSERVACAO]
+    lista_df.at[idx, COL_OBSERVACAO] = f"{atual}; {msg}" if atual else msg
+
+
+def executar(lista_df=None):
     """
-    Faz login no SEI e baixa os PDFs dos instrumentos.
+    Faz login no SEI e, para cada linha da lista de download, baixa:
+      1. O PDF do Instrumento  → {Doc_autorizativo}.pdf
+      2. Cada Termo Aditivo    → {int(ta_num)}_{sufixo}.pdf  (ex: 78162090_1.pdf)
+
+    Quando um arquivo não é encontrado no SEI, registra na coluna Observação.
+    Ao final, salva a lista atualizada em PLANILHA_LISTA_DOWNLOAD.
 
     Parâmetros
     ----------
-    instrumentos_df : pd.DataFrame | None
-        DataFrame com colunas COL_SEI_NUM_SEI e COL_SEI_INSTRUMENTO.
-        Se None, lê todos os registros de PLANILHA_CONTROLE.
+    lista_df : pd.DataFrame | None
+        DataFrame gerado por gerar_lista_download().
+        Se None, lê de PLANILHA_LISTA_DOWNLOAD.
     """
     os.makedirs(DIRETORIO_PDFS, exist_ok=True)
 
-    if instrumentos_df is None:
-        controle_sei   = pd.read_excel(PLANILHA_CONTROLE)
-        instrumentos_df = controle_sei[
-            [COL_SEI_NUM_SEI, COL_SEI_INSTRUMENTO]
-        ].dropna(subset=[COL_SEI_INSTRUMENTO])
+    if lista_df is None:
+        lista_df = pd.read_excel(PLANILHA_LISTA_DOWNLOAD)
 
-    instrumentos_df = instrumentos_df.dropna(subset=[COL_SEI_INSTRUMENTO])
-    print(f"ℹ️  {len(instrumentos_df)} instrumento(s) na lista de download.")
+    if COL_OBSERVACAO not in lista_df.columns:
+        lista_df[COL_OBSERVACAO] = ""
+    else:
+        lista_df[COL_OBSERVACAO] = lista_df[COL_OBSERVACAO].fillna("")
+
+    ta_cols_presentes = [c for c in COLUNAS_TA if c in lista_df.columns]
 
     options = Options()
     for arg in CHROME_OPTIONS:
@@ -131,22 +144,47 @@ def executar(instrumentos_df=None):
         fazer_login(navegador)
         fechar_modal(navegador)
 
-        for _, row in instrumentos_df.iterrows():
-            num_sei     = row[COL_SEI_NUM_SEI]
-            instrumento = row[COL_SEI_INSTRUMENTO]
-            caminho_pdf = os.path.join(DIRETORIO_PDFS, f"{instrumento}.pdf")
+        for idx, row in lista_df.iterrows():
+            instrumento = row.get(COL_DOC_AUTORIZATIVO)
 
-            try:
-                if os.path.exists(caminho_pdf):
-                    print(f"⚠️  PDF {num_sei} já existe, pulando.")
+            # ── Instrumento ───────────────────────────────────────────────────
+            if pd.notna(instrumento):
+                caminho_pdf = os.path.join(DIRETORIO_PDFS, f"{instrumento}.pdf")
+                try:
+                    if os.path.exists(caminho_pdf):
+                        print(f"⚠️  Instrumento {instrumento} já existe, pulando.")
+                    else:
+                        baixar_pdf(navegador, instrumento, caminho_pdf, instrumento)
+                        if not os.path.exists(caminho_pdf) or os.path.getsize(caminho_pdf) == 0:
+                            _registrar_observacao(lista_df, idx, instrumento)
+                except Exception:
+                    _registrar_observacao(lista_df, idx, instrumento)
+                    print(f"❌ Instrumento {instrumento} não encontrado no SEI.")
+
+            # ── Termos Aditivos ───────────────────────────────────────────────
+            for ta_col in ta_cols_presentes:
+                ta_val = row.get(ta_col)
+                if pd.isna(ta_val):
                     continue
-                baixar_pdf(navegador, instrumento, caminho_pdf, num_sei)
-            except Exception as e:
-                print(f"❌ Erro ao processar {num_sei} ({instrumento}): {e}")
+                sufixo      = ta_col.split()[-1]
+                ta_num      = int(float(ta_val))
+                nome_pdf    = f"{ta_num}_{sufixo}.pdf"
+                caminho_pdf = os.path.join(DIRETORIO_PDFS, nome_pdf)
+                try:
+                    if os.path.exists(caminho_pdf):
+                        print(f"⚠️  {nome_pdf} já existe, pulando.")
+                    else:
+                        baixar_pdf(navegador, ta_num, caminho_pdf, f"{ta_col} ({ta_num})")
+                        if not os.path.exists(caminho_pdf) or os.path.getsize(caminho_pdf) == 0:
+                            _registrar_observacao(lista_df, idx, ta_num)
+                except Exception:
+                    _registrar_observacao(lista_df, idx, ta_num)
+                    print(f"❌ {ta_col} ({ta_num}) não encontrado no SEI.")
 
     finally:
         navegador.quit()
-        print("✅ Download de PDFs concluído.")
+        lista_df.to_excel(PLANILHA_LISTA_DOWNLOAD, index=False)
+        print(f"✅ Download concluído. Lista atualizada em {PLANILHA_LISTA_DOWNLOAD.name}")
 
 
 # ── Execução standalone ───────────────────────────────────────────────────────

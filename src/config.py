@@ -32,9 +32,13 @@ DATA_FILTRO        = list(range(ANO_LIMITE, ANO_ATUAL + 1))
 SITUACAO_BLOQUEADO = "BLOQUEADO"
 
 # ── Planilha de saída ─────────────────────────────────────────────────────────
-PLANILHA_OUTPUT_PREFIX = f"Consultas SIGCON - Instrumentos de {ANO_LIMITE} até {ANO_ATUAL} - ATUALIZADO"
-ABA_EXCEL              = "Consulta_SIGCON"
-CAMINHO_FINAL = BASE_DIR / "data" / "output"
+PLANILHA_OUTPUT_PREFIX  = f"Consultas SIGCON - Instrumentos de {ANO_LIMITE} até {ANO_ATUAL} - ATUALIZADO"
+ABA_EXCEL               = "Consulta_SIGCON"
+CAMINHO_FINAL           = BASE_DIR / "data" / "output"
+PLANILHA_LISTA_DOWNLOAD = BASE_DIR / "data" / "output" / "lista_download.xlsx"
+
+# ── Colunas auxiliares ────────────────────────────────────────────────────────
+COL_OBSERVACAO = "Observação"
 
 # ── URLs ──────────────────────────────────────────────────────────────────────
 URL_SEI              = "https://www.sei.mg.gov.br/sip/login.php?sigla_orgao_sistema=GOVMG&sigla_sistema=SEI&infra_url=L3NlaS8="
@@ -45,9 +49,10 @@ URL_TRANSFEREGOV_BASE = (
 )
 
 # ── Google Drive ──────────────────────────────────────────────────────────────
-PASTA_DRIVE  = "transparencia"
-SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive"]
-TOKEN_PATH   = BASE_DIR / "token.json"
+PASTA_DRIVE    = "Instrumento"
+PASTA_DRIVE_TA = "Termos aditivos"
+SCOPES_DRIVE   = ["https://www.googleapis.com/auth/drive"]
+TOKEN_PATH     = BASE_DIR / "token.json"
 
 # ── Timeouts e esperas (segundos) ─────────────────────────────────────────────
 TIMEOUT        = 10
@@ -62,8 +67,8 @@ XPATH_TELA_LOGIN  = '//*[@id="area-cards-login"]'
 XPATH_USUARIO     = '//*[@id="txtUsuario"]'
 XPATH_SENHA       = '//*[@id="pwdSenha"]'
 XPATH_ORGAO       = '//*[@id="selOrgao"]'
-XPATH_ORGAO_SCC   = '//*[@id="selOrgao"]/option[53]'
-XPATH_BOTAO_LOGIN = '//*[@id="Acessar"]'
+XPATH_ORGAO_SCC   = '//*[@id="selOrgao"]/option[56]'
+XPATH_BOTAO_LOGIN = '//*[@id="sbmAcessar"]'
 XPATH_BODY        = '/html/body'
 
 # ── XPaths — Navegação / Download ─────────────────────────────────────────────
@@ -79,6 +84,13 @@ ESC   = '\ue00c'
 COL_SEI_NUM_SEI     = "Nº_SEI"              # número do processo SEI (ex: 1234567-89.2024)
 COL_SEI_SIAFI       = "Nº SIAFI_(SIGCON)"   # código SIAFI (chave de join com SIGCON)
 COL_SEI_INSTRUMENTO = "Instrumento"          # número do instrumento (nome do PDF)
+
+# ── Termos Aditivos — colunas do Controle SEI ─────────────────────────────────
+COLUNAS_TA = [
+    "TA 1",  "TA 2",  "TA 3",  "TA 4",  "TA 5",  "TA 6",  "TA 7",  "TA 8",
+    "TA 9",  "TA 10", "TA 11", "TA 12", "TA 13", "TA 16", "TA 17",
+    "TA 20", "TA 21", "TA 22",
+]
 
 # ── Nomes de colunas — Consultas SIGCON.xlsx ──────────────────────────────────
 COL_SIGCON_SIAFI             = "Código SIAFI"
@@ -125,6 +137,7 @@ COLUNAS_FINAIS = [
     COL_NOME_PDF,                   # "nome_pdf"
     COL_ID_PDF,                     # "id.y"
     COL_DRIVE_RESOURCE,             # "drive_resource"
+    *COLUNAS_TA,                    # "TA 1" … "TA 22" (preenchidas com link do Drive)
 ]
 
 # ── Estilo da planilha exportada ──────────────────────────────────────────────

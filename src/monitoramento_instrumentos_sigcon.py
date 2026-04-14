@@ -7,14 +7,15 @@ from config import (
     BASE_DIR, DOWNLOAD_DIR, DIRETORIO_PDFS,
     PLANILHA_CONTROLE, PLANILHA_CONSULTAS_SIGCON,
     PLANILHA_OUTPUT_PREFIX, ABA_EXCEL,
-    PASTA_DRIVE, SCOPES_DRIVE, TOKEN_PATH,
+    PLANILHA_LISTA_DOWNLOAD, COL_OBSERVACAO,
+    PASTA_DRIVE, PASTA_DRIVE_TA, SCOPES_DRIVE, TOKEN_PATH,
     URL_TRANSFEREGOV_BASE,
     COL_SEI_SIAFI, COL_SEI_INSTRUMENTO,
     COL_SIGCON_SIAFI, COL_SIGCON_CODIGO_UNIAO,
     COL_SIGCON_SITUACAO, COL_SIGCON_DATA_PUB,
     COL_SIGCON_INTEIRO_SIGCON, COL_SIGCON_INTEIRO_TRANSFERE,
     COL_DOC_AUTORIZATIVO, COL_NOME_PDF, COL_ID_PDF, COL_DRIVE_RESOURCE,
-    DATA_FILTRO, SITUACAO_BLOQUEADO, COLUNAS_FINAIS,
+    DATA_FILTRO, SITUACAO_BLOQUEADO, COLUNAS_FINAIS, COLUNAS_TA,
     EXCEL_FONTE, EXCEL_TAMANHO, EXCEL_LARGURA_COL, CAMINHO_FINAL
 )
 
@@ -59,35 +60,54 @@ def autenticar_drive():
 
 # ── Drive: upload e listagem ──────────────────────────────────────────────────
 
-def _id_pasta_drive(service):
-    """Retorna o ID da pasta 'transparencia' no Drive."""
+def _id_pasta_drive(service, pasta_name=PASTA_DRIVE):
+    """Retorna o ID da pasta `pasta_name` no Drive."""
     resultado = service.files().list(
-        q=f"name='{PASTA_DRIVE}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+        q=f"name='{pasta_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
         fields="files(id, name)",
     ).execute()
     pastas = resultado.get("files", [])
     if not pastas:
-        raise RuntimeError(f"Pasta '{PASTA_DRIVE}' não encontrada no Google Drive.")
+        raise RuntimeError(f"Pasta '{pasta_name}' não encontrada no Google Drive.")
     return pastas[0]["id"]
 
 
-def fazer_upload_pdfs(service):
-    """Envia para o Drive os PDFs locais que ainda não estão na pasta transparencia."""
-    pasta_id = _id_pasta_drive(service)
-
-    # Nomes dos arquivos já existentes no Drive
+def _nomes_existentes_na_pasta(service, pasta_id):
     resultado = service.files().list(
         q=f"'{pasta_id}' in parents and trashed=false",
         fields="files(name)",
         pageSize=1000,
     ).execute()
-    nomes_existentes = {f["name"] for f in resultado.get("files", [])}
+    return {f["name"] for f in resultado.get("files", [])}
+
+
+def _is_termo_aditivo(pdf_path):
+    """Retorna True se o arquivo for um Termo Aditivo (stem termina em _<dígitos>)."""
+    stem = pdf_path.stem
+    partes = stem.rsplit("_", 1)
+    return len(partes) == 2 and partes[1].isdigit()
+
+
+def fazer_upload_pdfs(service):
+    """Envia PDFs locais para o Drive: TAs → 'Termos aditivos', demais → 'Instrumento'."""
+    pasta_id_inst = _id_pasta_drive(service, PASTA_DRIVE)
+    pasta_id_ta   = _id_pasta_drive(service, PASTA_DRIVE_TA)
+
+    nomes_inst = _nomes_existentes_na_pasta(service, pasta_id_inst)
+    nomes_ta   = _nomes_existentes_na_pasta(service, pasta_id_ta)
 
     upados = 0
     for pdf_path in sorted(Path(DIRETORIO_PDFS).glob("*.pdf")):
-        if pdf_path.name in nomes_existentes:
-            continue
-        file_metadata = {"name": pdf_path.name, "parents": [pasta_id]}
+        if _is_termo_aditivo(pdf_path):
+            if pdf_path.name in nomes_ta:
+                continue
+            pasta_destino = pasta_id_ta
+        else:
+            if pdf_path.name in nomes_inst:
+                continue
+            pasta_destino = pasta_id_inst
+
+        file_metadata = {"name": pdf_path.name, "parents": [pasta_destino]}
         media = MediaFileUpload(str(pdf_path), mimetype="application/pdf", resumable=True)
         service.files().create(
             body=file_metadata,
@@ -111,12 +131,72 @@ def listar_pdfs_drive(service):
     ).execute()
     arquivos = resultado.get("files", [])
 
-    df = pd.DataFrame(arquivos)  # colunas: id, name
+    df = pd.DataFrame(arquivos) if arquivos else pd.DataFrame(columns=["id", "name"])
     df[COL_DRIVE_RESOURCE]   = "https://drive.google.com/file/d/" + df["id"] + "/view"
     df[COL_DOC_AUTORIZATIVO] = df["name"].str[:-4]   # remove ".pdf"
 
-    print(f"✅ {len(df)} arquivo(s) listado(s) no Drive.")
+    print(f"✅ {len(df)} arquivo(s) listado(s) no Drive (Instrumento).")
     return df
+
+
+def listar_pdfs_ta_drive(service):
+    """Lista os arquivos da pasta 'Termos aditivos' e retorna DataFrame com links."""
+    pasta_id = _id_pasta_drive(service, PASTA_DRIVE_TA)
+
+    resultado = service.files().list(
+        q=f"'{pasta_id}' in parents and trashed=false",
+        fields="files(id, name)",
+        pageSize=1000,
+    ).execute()
+    arquivos = resultado.get("files", [])
+
+    df = pd.DataFrame(arquivos) if arquivos else pd.DataFrame(columns=["id", "name"])
+    df["drive_resource_ta"] = "https://drive.google.com/file/d/" + df["id"] + "/view"
+    df["stem"]              = df["name"].str[:-4]   # remove ".pdf"
+
+    print(f"✅ {len(df)} arquivo(s) listado(s) no Drive (Termos aditivos).")
+    return df
+
+
+# ── Lista de download ─────────────────────────────────────────────────────────
+
+def gerar_lista_download(sigcon_filtrado, controle_sei):
+    """
+    Cruza o SIGCON filtrado com o Controle SEI pelo SIAFI e gera um XLSX com:
+      - Código SIAFI
+      - Doc_autorizativo (= Instrumento do Controle SEI)
+      - TA 1 … TA 22 (colunas presentes no Controle SEI)
+      - Observação (vazia — preenchida pelo download)
+
+    Salva em PLANILHA_LISTA_DOWNLOAD e retorna o DataFrame.
+    """
+    ta_cols_presentes = [c for c in COLUNAS_TA if c in controle_sei.columns]
+
+    controle = controle_sei[
+        [COL_SEI_SIAFI, COL_SEI_INSTRUMENTO] + ta_cols_presentes
+    ].copy()
+    controle = controle.rename(columns={
+        COL_SEI_SIAFI:       "_siafi_key",
+        COL_SEI_INSTRUMENTO: COL_DOC_AUTORIZATIVO,
+    })
+    controle["_siafi_key"] = controle["_siafi_key"].astype(str)
+
+    sigcon = sigcon_filtrado[[COL_SIGCON_SIAFI]].copy()
+    sigcon[COL_SIGCON_SIAFI] = sigcon[COL_SIGCON_SIAFI].astype(str)
+
+    merged = pd.merge(
+        sigcon, controle,
+        left_on=COL_SIGCON_SIAFI,
+        right_on="_siafi_key",
+        how="left",
+    ).drop(columns=["_siafi_key"])
+
+    merged = merged.drop_duplicates(subset=[COL_SIGCON_SIAFI]).reset_index(drop=True)
+    merged[COL_OBSERVACAO] = ""
+
+    merged.to_excel(PLANILHA_LISTA_DOWNLOAD, index=False)
+    print(f"✅ Lista de download gerada — {len(merged)} instrumento(s) → {PLANILHA_LISTA_DOWNLOAD.name}")
+    return merged
 
 
 # ── Carga das bases ───────────────────────────────────────────────────────────
@@ -159,15 +239,19 @@ def filtrar_sigcon(df):
 
 # ── Cruzamento de dados ───────────────────────────────────────────────────────
 
-def cruzar_dados(sigcon_filtrado, controle_sei, lista_instrumentos):
+def cruzar_dados(sigcon_filtrado, controle_sei, lista_instrumentos, lista_ta_drive):
     """
-    Cruza três fontes de dados:
-      1. SIGCON filtrado  ←[SIAFI]→  Controle SEI  (adiciona Doc_autorizativo)
-      2. Resultado        ←[Doc_autorizativo]→  Drive  (adiciona nome_pdf, id.y, drive_resource)
+    Cruza quatro fontes de dados:
+      1. SIGCON filtrado  ←[SIAFI]→  Controle SEI  (adiciona Doc_autorizativo + colunas TA)
+      2. Resultado        ←[Doc_autorizativo]→  Drive Instrumento  (nome_pdf, id.y, drive_resource)
+      3. Colunas TA       → substituídas pelo link do Drive 'Termos aditivos'
     Também constrói a URL do TransfereGov a partir do Código.União.
     """
     # ── Prepara Controle SEI ──────────────────────────────────────────────────
-    controle = controle_sei[[COL_SEI_SIAFI, COL_SEI_INSTRUMENTO]].copy()
+    ta_cols_presentes = [c for c in COLUNAS_TA if c in controle_sei.columns]
+    controle = controle_sei[
+        [COL_SEI_SIAFI, COL_SEI_INSTRUMENTO] + ta_cols_presentes
+    ].copy()
     controle = controle.rename(columns={
         COL_SEI_SIAFI:       "_siafi_key",
         COL_SEI_INSTRUMENTO: COL_DOC_AUTORIZATIVO,
@@ -206,6 +290,18 @@ def cruzar_dados(sigcon_filtrado, controle_sei, lista_instrumentos):
 
     # Renomeia colunas do Drive para os nomes finais esperados
     merged = merged.rename(columns={"name": COL_NOME_PDF, "id": COL_ID_PDF})
+
+    # ── Join 3: substitui valores numéricos das colunas TA por links do Drive ─
+    if not lista_ta_drive.empty and ta_cols_presentes:
+        link_por_stem = lista_ta_drive.set_index("stem")["drive_resource_ta"]
+        for ta_col in ta_cols_presentes:
+            sufixo = ta_col.split()[-1]
+            def _link_ta(val, _suf=sufixo, _lookup=link_por_stem):
+                if pd.isna(val):
+                    return None
+                stem = f"{int(float(val))}_{_suf}"
+                return _lookup.get(stem)
+            merged[ta_col] = merged[ta_col].apply(_link_ta)
 
     print(f"✅ Cruzamento concluído — {len(merged)} registros.")
     return merged
@@ -310,12 +406,15 @@ def exportar_planilha(df):
 # ── Execução direta (sem filtro pré-aplicado) ─────────────────────────────────
 
 if __name__ == "__main__":
+    controle_sei, consultas_sigcon = carregar_bases()
+    sigcon_filtrado    = filtrar_sigcon(consultas_sigcon)
+    gerar_lista_download(sigcon_filtrado, controle_sei)
+
     service            = autenticar_drive()
     fazer_upload_pdfs(service)
     pasta_id           = _id_pasta_drive(service)
     lista_instrumentos = listar_pdfs_drive(service)
-    controle_sei, consultas_sigcon = carregar_bases()
-    sigcon_filtrado    = filtrar_sigcon(consultas_sigcon)
-    df = cruzar_dados(sigcon_filtrado, controle_sei, lista_instrumentos)
+    lista_ta_drive     = listar_pdfs_ta_drive(service)
+    df = cruzar_dados(sigcon_filtrado, controle_sei, lista_instrumentos, lista_ta_drive)
     df = preencher_link_inteiro_teor(df, service, pasta_id)
     exportar_planilha(df)
